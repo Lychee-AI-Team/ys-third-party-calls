@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     # 服务配置
     host: str = "0.0.0.0"
     port: int = 1000
+    root_path: str = ""  # 反向代理路径前缀，如 /ys-third-party-calls
 
     # 固定客户编码（用于订单管理）
     fixed_euser_id: str = "1001"

@@ -20,6 +20,17 @@ class OrderCreate(BaseModel):
         return v
 
 
+class CallbackRequest(BaseModel):
+    """订单回调请求模型"""
+    euserOrderNo: str = Field(..., description="客户交易流水号（订单ID）")
+    orderNo: str = Field(..., description="平台订单号")
+    orderStatus: str = Field(..., description="充值状态：success/fail")
+    sign: str = Field(..., description="签名")
+    timestamp: str = Field(..., description="请求时间戳")
+    cardInfo: Optional[str] = Field(None, description="卡密信息（加密）")
+    resultMsg: Optional[str] = Field(None, description="结果描述")
+
+
 class OrderResponse(BaseModel):
     """订单响应模型"""
     order_id: str

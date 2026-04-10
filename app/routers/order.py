@@ -7,8 +7,9 @@ from app.config import settings
 from app.database import get_db
 from app.models.order import Order
 from app.models.product import Product
-from app.schemas.order import OrderCreate, OrderResponse
+from app.schemas.order import OrderCreate, OrderResponse, CallbackRequest
 from app.utils.third_party import call_charge_api, call_query_api
+from app.utils.sign import verify_sign
 
 logger = logging.getLogger(__name__)
 
@@ -185,3 +186,42 @@ async def delete_order(
     db.commit()
 
     return {"message": "订单删除成功", "order_id": order_id}
+
+
+@router.post("/callback", summary="订单回调")
+async def order_callback(
+    callback: CallbackRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    订单回调接口（第三方平台调用）
+
+    - 验证签名
+    - 查找订单
+    - 更新订单状态和卡密信息
+    """
+    # 1. 验证签名（排除sign字段）
+    params = callback.model_dump(exclude={"sign"})
+    if not verify_sign(params, callback.sign, settings.apikey):
+        raise HTTPException(status_code=400, detail="签名验证失败")
+
+    # 2. 查找订单
+    db_order = db.query(Order).filter(
+        Order.order_id == callback.euserOrderNo
+    ).first()
+    if not db_order:
+        raise HTTPException(status_code=404, detail="订单不存在")
+
+    # 3. 更新订单信息
+    db_order.order_status = callback.orderStatus
+    db_order.platform_order_no = callback.orderNo
+    if callback.cardInfo:
+        db_order.card_info = callback.cardInfo
+    if callback.resultMsg:
+        db_order.ret_msg = callback.resultMsg
+    db_order.ret_code = 0 if callback.orderStatus == "success" else 1
+
+    db.commit()
+
+    # 返回第三方期望的格式
+    return "success"

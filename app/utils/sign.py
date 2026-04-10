@@ -32,3 +32,19 @@ def generate_sign(params: Dict[str, Any], apikey: str) -> str:
     md5_hash = hashlib.md5(sign_str.encode('utf-8')).hexdigest().lower()
 
     return md5_hash
+
+
+def verify_sign(params: Dict[str, Any], sign: str, apikey: str) -> bool:
+    """
+    验证签名
+
+    Args:
+        params: 参数字典（不含sign字段）
+        sign: 待验证的签名
+        apikey: API密钥
+
+    Returns:
+        签名是否有效
+    """
+    expected_sign = generate_sign(params, apikey)
+    return expected_sign == sign

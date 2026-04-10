@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """MCP Server 启动脚本（Streamable HTTP）"""
-from app.mcp.server import mcp
+import uvicorn
+from app.mcp.server import get_mcp_app
 
 if __name__ == "__main__":
-    # Streamable HTTP 模式运行
-    mcp.run(transport="streamable-http", host="0.0.0.0", port=8000)
+    # 获取带中间件的 MCP HTTP 应用
+    app = get_mcp_app()
+    # 使用 uvicorn 运行
+    uvicorn.run(app, host="0.0.0.0", port=8000)

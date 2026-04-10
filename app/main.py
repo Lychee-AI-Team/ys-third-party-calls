@@ -1,9 +1,17 @@
 import uvicorn
+import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from app.config import settings
 from app.routers import hello, product, order
+
+# 配置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler()]
+)
 
 
 class PathNormalizeMiddleware(BaseHTTPMiddleware):

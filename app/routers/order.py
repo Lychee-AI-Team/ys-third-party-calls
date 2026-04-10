@@ -216,7 +216,12 @@ async def order_callback(
         logger.warning(f"订单不存在: {callback.euserOrderNo}")
         raise HTTPException(status_code=404, detail="订单不存在")
 
-    # 3. 更新订单信息
+    # 3. 幂等性检查：只有processing状态才更新
+    if db_order.order_status != "processing":
+        logger.info(f"订单状态非processing，跳过更新: {callback.euserOrderNo}, 当前状态: {db_order.order_status}")
+        return "success"
+
+    # 4. 更新订单信息
     db_order.order_status = callback.orderStatus
     db_order.platform_order_no = callback.orderNo
     if callback.cardInfo:

@@ -200,9 +200,12 @@ async def order_callback(
     - 查找订单
     - 更新订单状态和卡密信息
     """
+    logger.info(f"收到订单回调请求: {callback.model_dump()}")
+
     # 1. 验证签名（排除sign字段）
     params = callback.model_dump(exclude={"sign"})
     if not verify_sign(params, callback.sign, settings.apikey):
+        logger.warning(f"签名验证失败, 订单号: {callback.euserOrderNo}")
         raise HTTPException(status_code=400, detail="签名验证失败")
 
     # 2. 查找订单
@@ -210,6 +213,7 @@ async def order_callback(
         Order.order_id == callback.euserOrderNo
     ).first()
     if not db_order:
+        logger.warning(f"订单不存在: {callback.euserOrderNo}")
         raise HTTPException(status_code=404, detail="订单不存在")
 
     # 3. 更新订单信息
@@ -222,6 +226,8 @@ async def order_callback(
     db_order.ret_code = 0 if callback.orderStatus == "success" else 1
 
     db.commit()
+
+    logger.info(f"订单回调处理成功, 订单号: {callback.euserOrderNo}, 状态: {callback.orderStatus}")
 
     # 返回第三方期望的格式
     return "success"

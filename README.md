@@ -8,6 +8,7 @@
 - 订单管理：创建订单、查询订单、删除订单
 - 第三方接口对接：充值接口、订单查询接口
 - 签名验证：MD5签名机制
+- MCP Server：支持 AI 客户端（小龙虾等）通过 MCP 协议调用服务
 
 ## 技术栈
 
@@ -35,6 +36,10 @@ ys-third-party-calls/
 │   │   ├── hello.py       # 健康检查
 │   │   ├── product.py     # 商品路由
 │   │   └── order.py       # 订单路由
+│   ├── mcp/               # MCP Server 模块
+│   │   ├── __init__.py    # 模块初始化
+│   │   ├── server.py      # FastMCP Server 定义
+│   │   └── tools.py       # MCP Tools 定义
 │   └── utils/             # 工具模块
 │       ├── security.py    # 密码加密
 │       ├── sign.py        # 签名生成
@@ -43,8 +48,11 @@ ys-third-party-calls/
 │   ├── init.sql           # 初始化脚本
 │   ├── products.sql       # 商品表
 │   └── orders.sql         # 订单表
-├── Dockerfile
-├── docker-compose.yml
+├── run_mcp.py             # MCP Server 启动脚本
+├── Dockerfile             # Web 服务 Dockerfile
+├── Dockerfile.mcp         # MCP 服务 Dockerfile
+├── docker-compose.yml     # Web 服务 Docker Compose
+├── docker-compose.mcp.yml # MCP 服务 Docker Compose
 ├── requirements.txt
 └── .env                   # 环境配置（不提交到Git）
 ```
@@ -98,11 +106,23 @@ mysql -u root -p < sql/init.sql
 
 ### 4. 启动服务
 
+#### Web API 服务（端口 1000）
+
 ```bash
 python -m uvicorn app.main:app --host 0.0.0.0 --port 1000
 ```
 
 访问 API 文档：http://localhost:1000/docs
+
+#### MCP Server（端口 8000）
+
+```bash
+python run_mcp.py
+```
+
+MCP 端点：http://localhost:8000/mcp
+
+两个服务可同时运行，端口互不冲突。
 
 ## Docker 部署
 
@@ -197,3 +217,97 @@ ROOT_PATH=/ys-third-party-calls
 2. 生产环境建议关闭 `DEBUG=true`
 3. 第三方API需要配置IP白名单
 4. 只能删除 `order_status=fail` 的订单
+
+---
+
+## MCP Server
+
+基于 FastMCP 框架实现的 MCP Server，支持 AI 客户端通过 MCP 协议调用服务。
+
+### 技术栈
+
+- **FastMCP** - 简化 MCP Server 开发的 Python 框架
+- **Streamable HTTP** - MCP 新一代传输协议，支持 HTTP 远程调用
+
+### MCP Tools 列表
+
+| Tool | 参数 | 说明 |
+|------|------|------|
+| `product_add` | name, third_party_code, description? | 新增商品 |
+| `product_list` | page?, page_size?, keyword?, is_published? | 商品列表 |
+| `product_get` | product_id | 商品详情 |
+| `product_publish` | product_id | 上架/下架 |
+| `product_delete` | product_id | 删除商品 |
+| `order_create` | product_id, quantity, account_no | 创建订单（调用第三方充值） |
+| `order_get` | order_id | 查询订单（自动调用第三方更新状态） |
+| `order_delete` | order_id | 删除订单（仅限失败订单） |
+
+### Docker 部署 MCP
+
+```bash
+# 构建 MCP 镜像
+docker-compose -f docker-compose.mcp.yml build
+
+# 启动 MCP 服务
+docker-compose -f docker-compose.mcp.yml up -d
+
+# 查看日志
+docker-compose -f docker-compose.mcp.yml logs -f
+```
+
+### 小龙虾接入配置
+
+1. 打开小龙虾客户端设置
+2. 进入 **MCP Servers** 配置
+3. 添加新的 MCP Server：
+   - **名称**: `ys-third-party-calls`
+   - **类型**: `HTTP` 或 `Streamable HTTP`
+   - **地址**: `http://localhost:8000/mcp`（本地）或 `http://服务器IP:8000/mcp`（远程）
+4. 保存并启用
+
+在小龙虾对话中可测试：
+- "帮我查看商品列表"
+- "创建一个订单，商品ID是2，数量1，充值账号13800138000"
+
+### 客户端连接示例
+
+#### Python MCP 客户端
+
+```python
+import asyncio
+import httpx
+import json
+
+async def call_mcp_tool(tool_name: str, arguments: dict):
+    headers = {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json, text/event-stream'
+    }
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        # 初始化
+        resp = await client.post('http://localhost:8000/mcp', json={
+            'jsonrpc': '2.0', 'method': 'initialize',
+            'params': {'protocolVersion': '2024-11-05', 'capabilities': {},
+                       'clientInfo': {'name': 'test', 'version': '1.0'}},
+            'id': 1
+        }, headers=headers)
+
+        session_id = resp.headers.get('mcp-session-id')
+        if session_id:
+            headers['mcp-session-id'] = session_id
+
+        # 调用 Tool
+        resp = await client.post('http://localhost:8000/mcp', json={
+            'jsonrpc': '2.0', 'method': 'tools/call',
+            'params': {'name': tool_name, 'arguments': arguments},
+            'id': 2
+        }, headers=headers)
+
+        for line in resp.text.split('\n'):
+            if line.startswith('data:'):
+                return json.loads(line[5:].strip())
+
+# 使用示例
+asyncio.run(call_mcp_tool('product_list', {'page': 1, 'page_size': 10}))
+```

@@ -1,0 +1,11 @@
+services:
+  mcp-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.mcp
+    container_name: ys-mcp-server
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    restart: unless-stopped

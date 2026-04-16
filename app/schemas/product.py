@@ -1,4 +1,5 @@
 from datetime import datetime
+from decimal import Decimal
 from typing import List, Optional
 from pydantic import BaseModel, Field
 
@@ -8,6 +9,8 @@ class ProductCreate(BaseModel):
     name: str = Field(..., max_length=100, description="商品名称")
     third_party_code: str = Field(..., max_length=100, description="第三方产品编码")
     description: Optional[str] = Field(None, description="商品信息描述")
+    cost_price: Decimal = Field(..., ge=0, description="成本价")
+    selling_price: Decimal = Field(..., ge=0, description="售价")
 
 
 class ProductUpdate(BaseModel):
@@ -15,6 +18,8 @@ class ProductUpdate(BaseModel):
     name: Optional[str] = Field(None, max_length=100, description="商品名称")
     third_party_code: Optional[str] = Field(None, max_length=100, description="第三方产品编码")
     description: Optional[str] = Field(None, description="商品信息描述")
+    cost_price: Optional[Decimal] = Field(None, ge=0, description="成本价")
+    selling_price: Optional[Decimal] = Field(None, ge=0, description="售价")
 
 
 class ProductResponse(BaseModel):
@@ -23,6 +28,8 @@ class ProductResponse(BaseModel):
     name: str
     third_party_code: str
     description: Optional[str] = None
+    cost_price: Decimal
+    selling_price: Decimal
     is_published: bool
     created_at: datetime
     updated_at: datetime

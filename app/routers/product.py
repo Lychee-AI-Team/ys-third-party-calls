@@ -20,6 +20,8 @@ def create_product(product: ProductCreate, db: Session = Depends(get_db)):
         name=product.name,
         third_party_code=product.third_party_code,
         description=product.description,
+        cost_price=product.cost_price,
+        selling_price=product.selling_price,
     )
     db.add(db_product)
     db.commit()

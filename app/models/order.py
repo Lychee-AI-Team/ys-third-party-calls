@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Column, DateTime, Integer, String, Text, BigInteger, ForeignKey
+from sqlalchemy import Column, DateTime, Integer, Numeric, String, Text, BigInteger, ForeignKey
 from app.database import Base
 
 
@@ -12,12 +12,20 @@ class Order(Base):
     product_id = Column(Integer, ForeignKey("products.id"), nullable=False, comment="商品ID")
     third_party_code = Column(String(100), nullable=False, comment="第三方产品编码")
     quantity = Column(Integer, nullable=False, comment="购买数量")
+    total_amount = Column(Numeric(10, 2), nullable=True, comment="订单总金额（售价×数量）")
+    pay_status = Column(String(20), default="pending", comment="支付状态：pending/paid/refunded")
+    alipay_trade_no = Column(String(64), nullable=True, comment="支付宝交易号")
+    alipay_info = Column(Text, nullable=True, comment="支付宝支付信息（JSON）")
+    refund_amount = Column(Numeric(10, 2), nullable=True, comment="退款金额")
+    refund_trade_no = Column(String(64), nullable=True, comment="退款交易号")
+    out_request_no = Column(String(64), nullable=True, comment="退款请求号")
+    refund_info = Column(Text, nullable=True, comment="退款返回信息（JSON）")
     account_no = Column(String(20), nullable=False, comment="充值账号（手机号）")
     request_timestamp = Column(BigInteger, nullable=False, comment="请求时间戳（毫秒）")
     platform_order_no = Column(String(100), nullable=True, comment="平台订单号")
     ret_code = Column(Integer, nullable=True, comment="操作状态码（0/1/2）")
     ret_msg = Column(String(255), nullable=True, comment="接单结果描述")
-    order_status = Column(String(20), default="processing", comment="订单状态")
+    order_status = Column(String(20), default="pending", comment="订单状态")
     card_info = Column(Text, nullable=True, comment="卡密信息")
     created_at = Column(DateTime, default=datetime.utcnow, comment="创建时间")
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, comment="更新时间")

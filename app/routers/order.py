@@ -1,8 +1,11 @@
 import json
+import re
 import time
 import uuid
 import logging
+from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import get_db
@@ -152,21 +155,24 @@ async def create_order(order: OrderCreate, db: Session = Depends(get_db)):
             if not product.is_published:
                 raise HTTPException(status_code=400, detail=f"商品未上架: {item.product_id}")
 
-            # 防重复：同一账号+商品已有pending订单则返回已有订单
+            # 防重复：同一账号+商品+数量已有pending订单则返回已有订单
             existing = db.query(Order).filter(
                 Order.account_no == order.account_no,
                 Order.product_id == item.product_id,
+                Order.quantity == item.quantity,
                 Order.pay_status == "pending",
             ).first()
             if existing:
-                logger.info(f"该账号已有同商品pending订单: order_id={existing.order_id}, product_id={item.product_id}, account_no={order.account_no}")
-                created_orders.append(existing)
-                if existing.alipay_info:
-                    try:
-                        payment_links.append({"order_id": existing.order_id, "pay_result": json.loads(existing.alipay_info)})
-                    except Exception:
-                        payment_links.append({"order_id": existing.order_id, "pay_result": existing.alipay_info})
-                continue
+                # 检查pending订单是否超过30分钟（支付链接有效期），超时则删除允许重新创建
+                if existing.created_at and existing.created_at < datetime.utcnow() - timedelta(minutes=10):
+                    logger.info(f"pending订单已超时，删除旧订单: order_id={existing.order_id}, created_at={existing.created_at}")
+                    db.delete(existing)
+                    db.flush()
+                else:
+                    logger.info(f"该账号已有同商品pending订单: order_id={existing.order_id}, product_id={item.product_id}, account_no={order.account_no}")
+                    created_orders.append(existing)
+                    payment_links.append({"order_id": existing.order_id, "pay_url": f"{settings.base_url}/orders/pay/{existing.order_id}"})
+                    continue
 
             # 生成32位唯一订单ID和时间戳
             order_id = generate_order_id()
@@ -206,7 +212,7 @@ async def create_order(order: OrderCreate, db: Session = Depends(get_db)):
                 db_order.alipay_info = json.dumps(alipay_result, ensure_ascii=False)
                 payment_links.append({
                     "order_id": order_id,
-                    "pay_result": alipay_result,
+                    "pay_url": f"{settings.base_url}/orders/pay/{order_id}",
                 })
             except Exception as e:
                 logger.error(f"支付宝支付创建失败: {str(e)}")
@@ -299,6 +305,47 @@ async def get_order(
 
     return db_order
 
+
+
+def _extract_pay_url(alipay_info_str: str) -> str:
+    """从 alipay_info JSON 字符串中提取支付宝支付链接"""
+    if not alipay_info_str:
+        return ""
+    try:
+        alipay_data = json.loads(alipay_info_str)
+        raw_text = alipay_data.get("raw_text", "")
+        match = re.search(r'\[.*?\]\((https://openapi\.alipay\.com[^\)]+)\)', raw_text)
+        if match:
+            return match.group(1)
+    except (json.JSONDecodeError, AttributeError):
+        pass
+    return ""
+
+
+@router.get("/pay/{order_id}", summary="支付代理页面")
+async def pay_order(order_id: str, db: Session = Depends(get_db)):
+    """
+    支付代理页面
+    - 订单存在且 pending → 302 重定向到支付宝支付链接
+    - 订单不存在/已过期/已支付 → 显示"订单已关闭"提示页
+    """
+    db_order = db.query(Order).filter(Order.order_id == order_id).first()
+
+    if not db_order or db_order.pay_status != "pending":
+        return HTMLResponse(content="<!DOCTYPE html>\n<html>\n<head><meta charset=\"utf-8\"><title>订单已关闭</title></head>\n<body style=\"display:flex;justify-content:center;align-items:center;height:100vh;margin:0;font-family:sans-serif;\">\n<div style=\"text-align:center;\">\n<h2 style=\"color:#999;\">订单已关闭</h2>\n<p>该订单已过期或已处理，请重新下单</p>\n</div>\n</body>\n</html>", status_code=200)
+
+    # 检查pending订单是否超过10分钟（支付链接有效期）
+    if db_order.created_at and db_order.created_at < datetime.utcnow() - timedelta(minutes=10):
+        return HTMLResponse(content="<!DOCTYPE html>\n<html>\n<head><meta charset=\"utf-8\"><title>订单已关闭</title></head>\n<body style=\"display:flex;justify-content:center;align-items:center;height:100vh;margin:0;font-family:sans-serif;\">\n<div style=\"text-align:center;\">\n<h2 style=\"color:#999;\">订单已关闭</h2>\n<p>该订单已超时，请重新下单</p>\n</div>\n</body>\n</html>", status_code=200)
+
+    # 从 alipay_info 中提取支付宝支付链接
+    pay_url = _extract_pay_url(db_order.alipay_info)
+
+    if not pay_url:
+        # 提取不到链接，返回提示
+        return HTMLResponse(content="<!DOCTYPE html>\n<html>\n<head><meta charset=\"utf-8\"><title>支付链接获取失败</title></head>\n<body style=\"display:flex;justify-content:center;align-items:center;height:100vh;margin:0;font-family:sans-serif;\">\n<div style=\"text-align:center;\">\n<h2 style=\"color:#e67e22;\">支付链接获取失败</h2>\n<p>请稍后重试或重新下单</p>\n</div>\n</body>\n</html>", status_code=200)
+
+    return RedirectResponse(url=pay_url, status_code=302)
 
 
 @router.post("/callback", summary="订单回调")

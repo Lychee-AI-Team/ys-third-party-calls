@@ -1,6 +1,9 @@
 """MCP Tools 定义（装饰器风格）"""
 import json
 import logging
+import time
+import uuid
+from datetime import datetime, timedelta
 from decimal import Decimal
 from fastmcp import FastMCP
 from app.database import SessionLocal
@@ -334,31 +337,31 @@ def register_tools(mcp: FastMCP):
                     logger.warning(f"[order_create] 商品未上架: product_id={product_id}")
                     return {"success": False, "error": f"商品未上架: {product_id}"}
 
-                # 防重复：同一账号+商品已有pending订单则返回已有订单
+                # 防重复：同一账号+商品+数量已有pending订单则返回已有订单
                 existing = db.query(Order).filter(
                     Order.account_no == account_no,
                     Order.product_id == product_id,
+                    Order.quantity == quantity,
                     Order.pay_status == "pending",
                 ).first()
                 if existing:
-                    logger.info(f"[order_create] 该账号已有同商品pending订单: order_id={existing.order_id}, product_id={product_id}, account_no={account_no}")
-                    existing_pay_link = None
-                    if existing.alipay_info:
-                        try:
-                            existing_pay_link = {"order_id": existing.order_id, "pay_result": json.loads(existing.alipay_info)}
-                        except Exception:
-                            existing_pay_link = {"order_id": existing.order_id, "pay_result": existing.alipay_info}
-                    created_orders.append({
-                        "order_id": existing.order_id,
-                        "product_id": existing.product_id,
-                        "quantity": existing.quantity,
-                        "total_amount": float(existing.total_amount) if existing.total_amount else None,
-                        "pay_status": existing.pay_status,
-                        "order_status": existing.order_status,
-                    })
-                    if existing_pay_link:
-                        payment_links.append(existing_pay_link)
-                    continue
+                    # 检查pending订单是否超过30分钟（支付链接有效期），超时则删除允许重新创建
+                    if existing.created_at and existing.created_at < datetime.utcnow() - timedelta(minutes=10):
+                        logger.info(f"[order_create] pending订单已超时，删除旧订单: order_id={existing.order_id}, created_at={existing.created_at}")
+                        db.delete(existing)
+                        db.flush()
+                    else:
+                        logger.info(f"[order_create] 该账号已有同商品pending订单: order_id={existing.order_id}, product_id={product_id}, account_no={account_no}")
+                        created_orders.append({
+                            "order_id": existing.order_id,
+                            "product_id": existing.product_id,
+                            "quantity": existing.quantity,
+                            "total_amount": float(existing.total_amount) if existing.total_amount else None,
+                            "pay_status": existing.pay_status,
+                            "order_status": existing.order_status,
+                        })
+                        payment_links.append({"order_id": existing.order_id, "pay_url": f"{settings.base_url}/orders/pay/{existing.order_id}"})
+                        continue
 
                 # 生成订单ID和时间戳
                 timestamp = str(int(time.time() * 1000))[-13:]
@@ -409,7 +412,7 @@ def register_tools(mcp: FastMCP):
                     order.alipay_info = json.dumps(alipay_result, ensure_ascii=False)
                     payment_links.append({
                         "order_id": order_id,
-                        "pay_result": alipay_result,
+                        "pay_url": f"{settings.base_url}/orders/pay/{order_id}",
                     })
                 except Exception as e:
                     logger.error(f"[order_create] 支付宝支付创建失败: order_id={order_id}, error={str(e)}")

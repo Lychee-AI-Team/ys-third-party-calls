@@ -1,12 +1,18 @@
 from datetime import datetime
-from typing import Optional
+from decimal import Decimal
+from typing import List, Optional
 from pydantic import BaseModel, Field, field_validator
+
+
+class OrderItem(BaseModel):
+    """订单商品项"""
+    product_id: int = Field(..., description="商品ID")
+    quantity: int = Field(..., gt=0, description="购买数量（必须大于0）")
 
 
 class OrderCreate(BaseModel):
     """创建订单请求模型"""
-    product_id: int = Field(..., description="商品ID")
-    quantity: int = Field(..., gt=0, description="购买数量（必须大于0）")
+    items: List[OrderItem] = Field(..., min_length=1, description="商品列表")
     account_no: str = Field(..., min_length=11, max_length=11, description="充值账号（手机号）")
 
     @field_validator('account_no')
@@ -38,6 +44,14 @@ class OrderResponse(BaseModel):
     product_id: int
     third_party_code: str
     quantity: int
+    total_amount: Optional[Decimal] = None
+    pay_status: str = "pending"
+    alipay_trade_no: Optional[str] = None
+    alipay_info: Optional[str] = None
+    refund_amount: Optional[Decimal] = None
+    refund_trade_no: Optional[str] = None
+    out_request_no: Optional[str] = None
+    refund_info: Optional[str] = None
     account_no: str
     request_timestamp: int
     platform_order_no: Optional[str] = None
@@ -50,3 +64,9 @@ class OrderResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class OrderListCreateResponse(BaseModel):
+    """批量创建订单响应模型"""
+    orders: List[OrderResponse] = Field(..., description="创建的订单列表")
+    total_count: int = Field(..., description="订单总数")

@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text
+from sqlalchemy import Boolean, Column, DateTime, Integer, Numeric, String, Text
 from app.database import Base
 
 
@@ -11,6 +11,8 @@ class Product(Base):
     name = Column(String(100), nullable=False, comment="商品名称")
     third_party_code = Column(String(100), unique=True, nullable=False, comment="第三方产品编码")
     description = Column(Text, nullable=True, comment="商品信息描述")
+    cost_price = Column(Numeric(10, 2), nullable=False, default=0, comment="成本价")
+    selling_price = Column(Numeric(10, 2), nullable=False, default=0, comment="售价")
     is_published = Column(Boolean, default=False, comment="上架状态")
     created_at = Column(DateTime, default=datetime.utcnow, comment="创建时间")
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, comment="更新时间")

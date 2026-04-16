@@ -1,3 +1,4 @@
+import json
 import time
 import uuid
 import logging
@@ -7,9 +8,10 @@ from app.config import settings
 from app.database import get_db
 from app.models.order import Order
 from app.models.product import Product
-from app.schemas.order import OrderCreate, OrderResponse, CallbackRequest
+from app.schemas.order import OrderCreate, OrderResponse, OrderListCreateResponse, CallbackRequest
 from app.utils.third_party import call_charge_api, call_query_api
 from app.utils.sign import verify_sign
+from app.mcp.alipay_client import call_alipay_tool
 
 logger = logging.getLogger(__name__)
 
@@ -21,94 +23,209 @@ FIXED_EUSER_ID = settings.fixed_euser_id
 
 def generate_order_id() -> str:
     """生成32位唯一订单ID"""
-    # 使用时间戳 + UUID生成32位订单ID
     timestamp = str(int(time.time() * 1000))[-13:]
     unique_part = uuid.uuid4().hex[:19]
     return timestamp + unique_part
 
 
-@router.post("/addOrder", response_model=OrderResponse, summary="创建订单")
-async def create_order(order: OrderCreate, db: Session = Depends(get_db)):
+def extract_alipay_info(alipay_result: dict) -> dict:
+    """从支付宝返回结果中提取关键信息
+
+    支持多种返回格式：
+    - JSON 结构: {"tradeNo": "xxx"}
+    - 中文文本-支付: "支付宝交易号: 2026041522001442081435263533"
+    - 中文文本-退款: "退款结果: 退款成功, 退款交易: 2026041622001442081440243290"
+    - 文本嵌入JSON: "退款结果: {\"tradeNo\":\"xxx\"}"
+    - 英文格式: "trade_no=xxx" 或 "trade_no: xxx"
     """
-    创建订单（调用第三方充值接口）
+    import re
+    info = {}
 
-    - 验证商品存在且已上架
-    - 调用第三方充值接口
-    - 当retCode=2时，调用查询接口确认状态
-    - 保存订单到数据库
-    """
-    # 验证商品存在且已上架
-    product = db.query(Product).filter(Product.id == order.product_id).first()
-    if not product:
-        raise HTTPException(status_code=404, detail="商品不存在")
-    if not product.is_published:
-        raise HTTPException(status_code=400, detail="商品未上架")
+    # 1. 从 JSON 结构中直接提取
+    if "tradeNo" in alipay_result:
+        info["trade_no"] = alipay_result["tradeNo"]
 
-    # 生成32位唯一订单ID和时间戳
-    order_id = generate_order_id()
-    timestamp = int(time.time() * 1000)
+    # 2. 从文本中提取
+    raw = alipay_result.get("raw_text", "")
+    if not raw:
+        raw = str(alipay_result)
 
-    # 调用第三方充值接口
+    if raw and "trade_no" not in info:
+        # 先尝试从嵌入的 JSON 中提取（如 "退款结果: {...}"）
+        json_match = re.search(r'\{[^}]*"tradeNo"\s*:\s*"(\d+)"', raw)
+        if json_match:
+            info["trade_no"] = json_match.group(1)
+        # 中文格式-退款: "退款交易: 20260416..."
+        else:
+            match = re.search(r'退款交易[：:]\s*(\d+)', raw)
+            if match:
+                info["trade_no"] = match.group(1)
+            # 中文格式-支付: "支付宝交易号: 20260415..."
+            else:
+                match = re.search(r'支付宝交易号[：:]\s*(\d+)', raw)
+                if match:
+                    info["trade_no"] = match.group(1)
+                # 英文/JSON 格式
+                elif re.search(r'trade_no', raw, re.IGNORECASE):
+                    match = re.search(r'trade_no["\s]*[=:]\s*"?(\d+)"?', raw, re.IGNORECASE)
+                    if match:
+                        info["trade_no"] = match.group(1)
+
+    # 3. 提取交易状态
+    if raw:
+        match = re.search(r'交易状态[：:]\s*(\w+)', raw)
+        if match:
+            info["trade_status"] = match.group(1)
+
+    return info
+
+
+async def trigger_charge(db: Session, db_order: Order, product: Product):
+    """支付成功后调用第三方充值接口"""
     try:
         result = await call_charge_api(
-            account_no=order.account_no,
-            buy_num=order.quantity,
+            account_no=db_order.account_no,
+            buy_num=db_order.quantity,
             euser_id=FIXED_EUSER_ID,
-            euser_order_no=order_id,
-            product_code=product.third_party_code,
-            timestamp=timestamp,
+            euser_order_no=db_order.order_id,
+            product_code=db_order.third_party_code,
+            timestamp=int(time.time() * 1000),
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"第三方接口调用失败: {str(e)}")
+        logger.error(f"第三方充值接口调用失败: {str(e)}")
+        db_order.order_status = "fail"
+        db_order.ret_msg = f"充值接口调用失败: {str(e)}"
+        db_order.ret_code = 1
+        db.commit()
+        return
 
-    # 解析响应
-    platform_order_no = result.get("orderNo")
     ret_code = result.get("retCode")
     ret_msg = result.get("retMsg")
 
-    # 当retCode=2时，调用查询接口确认状态
-    order_status = "processing"
-    card_info = None
+    # 确定订单状态
+    if ret_code == 1 or ret_code == "1":
+        order_status = "fail"
+    else:
+        order_status = "processing"
+
+    db_order.platform_order_no = result.get("orderNo")
+    db_order.ret_code = ret_code
+    db_order.ret_msg = ret_msg
+    db_order.order_status = order_status
+
+    # retCode=2 时查询确认
     if ret_code == 2 or ret_code == "2":
-        # 等待一小段时间后查询
-        time.sleep(1)
-        query_timestamp = int(time.time() * 1000)
         try:
             query_result = await call_query_api(
                 euser_id=FIXED_EUSER_ID,
-                euser_order_no=order_id,
-                timestamp=query_timestamp,
+                euser_order_no=db_order.order_id,
+                timestamp=int(time.time() * 1000),
             )
-            order_status = query_result.get("orderStatus", "processing")
-            card_info = query_result.get("cardInfo")
+            if "orderStatus" in query_result:
+                db_order.order_status = query_result["orderStatus"]
+            if "cardInfo" in query_result:
+                db_order.card_info = query_result["cardInfo"]
         except Exception:
-            # 查询失败，保持processing状态
             pass
-    elif ret_code == 0 or ret_code == "0":
-        order_status = "processing"
-    elif ret_code == 1 or ret_code == "1":
-        order_status = "fail"
 
-    # 保存订单到数据库
-    db_order = Order(
-        order_id=order_id,
-        euser_id=FIXED_EUSER_ID,
-        product_id=order.product_id,
-        third_party_code=product.third_party_code,
-        quantity=order.quantity,
-        account_no=order.account_no,
-        request_timestamp=timestamp,
-        platform_order_no=platform_order_no,
-        ret_code=ret_code,
-        ret_msg=ret_msg,
-        order_status=order_status,
-        card_info=card_info,
-    )
-    db.add(db_order)
     db.commit()
-    db.refresh(db_order)
 
-    return db_order
+
+@router.post("/addOrder", response_model=OrderListCreateResponse, summary="创建订单")
+async def create_order(order: OrderCreate, db: Session = Depends(get_db)):
+    """
+    创建订单（先发起支付宝支付，支付成功后自动充值）
+
+    - 验证商品存在且已上架
+    - 创建订单（pay_status=pending）
+    - 调用支付宝MCP创建支付，返回支付链接
+    """
+    created_orders = []
+    payment_links = []
+
+    try:
+        for item in order.items:
+            # 验证商品存在且已上架
+            product = db.query(Product).filter(Product.id == item.product_id).first()
+            if not product:
+                raise HTTPException(status_code=404, detail=f"商品不存在: {item.product_id}")
+            if not product.is_published:
+                raise HTTPException(status_code=400, detail=f"商品未上架: {item.product_id}")
+
+            # 防重复：同一账号+商品已有pending订单则返回已有订单
+            existing = db.query(Order).filter(
+                Order.account_no == order.account_no,
+                Order.product_id == item.product_id,
+                Order.pay_status == "pending",
+            ).first()
+            if existing:
+                logger.info(f"该账号已有同商品pending订单: order_id={existing.order_id}, product_id={item.product_id}, account_no={order.account_no}")
+                created_orders.append(existing)
+                if existing.alipay_info:
+                    try:
+                        payment_links.append({"order_id": existing.order_id, "pay_result": json.loads(existing.alipay_info)})
+                    except Exception:
+                        payment_links.append({"order_id": existing.order_id, "pay_result": existing.alipay_info})
+                continue
+
+            # 生成32位唯一订单ID和时间戳
+            order_id = generate_order_id()
+            timestamp = int(time.time() * 1000)
+
+            # 计算订单总金额
+            total_amount = product.selling_price * item.quantity
+
+            # 保存订单到数据库（仅创建，不调用第三方充值）
+            db_order = Order(
+                order_id=order_id,
+                euser_id=FIXED_EUSER_ID,
+                product_id=item.product_id,
+                third_party_code=product.third_party_code,
+                quantity=item.quantity,
+                total_amount=total_amount,
+                pay_status="pending",
+                account_no=order.account_no,
+                request_timestamp=timestamp,
+                order_status="pending",
+            )
+            db.add(db_order)
+            created_orders.append(db_order)
+
+            # 调用支付宝MCP创建支付
+            try:
+                alipay_args = {
+                    "outTradeNo": order_id,
+                    "totalAmount": float(total_amount),
+                    "orderTitle": product.name,
+                }
+                alipay_result = await call_alipay_tool("create-web-page-alipay-payment", alipay_args)
+                # 提取支付宝交易号等信息
+                alipay_info = extract_alipay_info(alipay_result)
+                if alipay_info.get("trade_no"):
+                    db_order.alipay_trade_no = alipay_info["trade_no"]
+                db_order.alipay_info = json.dumps(alipay_result, ensure_ascii=False)
+                payment_links.append({
+                    "order_id": order_id,
+                    "pay_result": alipay_result,
+                })
+            except Exception as e:
+                logger.error(f"支付宝支付创建失败: {str(e)}")
+                # 支付失败，回滚该订单
+                db.delete(db_order)
+                created_orders.pop()
+                raise HTTPException(status_code=500, detail=f"支付宝支付创建失败: {str(e)}")
+
+        db.commit()
+        for o in created_orders:
+            db.refresh(o)
+    except HTTPException:
+        db.rollback()
+        raise
+
+    return OrderListCreateResponse(
+        orders=created_orders,
+        total_count=len(created_orders),
+    )
 
 
 @router.get("/getOrder", response_model=OrderResponse, summary="查询订单")
@@ -119,73 +236,69 @@ async def get_order(
     """
     查询订单
 
-    - 验证订单存在
-    - 若order_status != processing，直接返回
-    - 调用第三方查询接口
-    - 更新订单状态和卡密信息
+    - 待支付(pay_status=pending)：查询支付宝支付状态，支付成功后自动触发充值
+    - 已支付充值中(pay_status=paid, order_status=processing)：查询第三方充值状态
+    - 其他状态：直接返回
     """
-    # 验证订单存在
-    db_order = db.query(Order).filter(Order.order_id == order_id).first()
+    db_order = db.query(Order).filter(Order.order_id == order_id).with_for_update().first()
     if not db_order:
         raise HTTPException(status_code=404, detail="订单不存在")
 
-    # 若order_status != processing，直接返回
-    if db_order.order_status != "processing":
+    # 待支付：查询支付宝支付状态
+    if db_order.pay_status == "pending":
+        try:
+            result = await call_alipay_tool("query-alipay-payment", {"outTradeNo": order_id})
+            # 存储支付宝查询结果
+            alipay_info = extract_alipay_info(result)
+            if alipay_info.get("trade_no"):
+                db_order.alipay_trade_no = alipay_info["trade_no"]
+            db_order.alipay_info = json.dumps(result, ensure_ascii=False)
+            raw_text = result.get("raw_text", "")
+            if "TRADE_SUCCESS" in raw_text or "支付成功" in raw_text:
+                # 再次检查状态，防止并发重复充值
+                db.refresh(db_order)
+                if db_order.pay_status != "pending":
+                    logger.info(f"订单状态已变更，跳过充值: order_id={order_id}, pay_status={db_order.pay_status}")
+                else:
+                    # 支付成功，更新状态并触发充值
+                    db_order.pay_status = "paid"
+                    db_order.order_status = "processing"
+                    db.commit()
+                    db.refresh(db_order)
+
+                    # 触发第三方充值
+                    product = db.query(Product).filter(Product.id == db_order.product_id).first()
+                    if product:
+                        await trigger_charge(db, db_order, product)
+                        db.refresh(db_order)
+        except Exception as e:
+            logger.warning(f"支付宝支付查询失败: {str(e)}")
         return db_order
 
-    # 调用第三方查询接口
-    timestamp = int(time.time() * 1000)
-    try:
-        result = await call_query_api(
-            euser_id=FIXED_EUSER_ID,
-            euser_order_no=order_id,
-            timestamp=timestamp,
-        )
-        # 打印第三方接口返回日志
-        logger.info(f"第三方查询接口返回: {result}")
-        print(f"第三方查询接口返回: {result}")
-        # 更新订单状态
-        if "orderStatus" in result:
-            db_order.order_status = result["orderStatus"]
-        if "cardInfo" in result:
-            db_order.card_info = result["cardInfo"]
-        if "retCode" in result:
-            db_order.ret_code = result["retCode"]
-        if "retMsg" in result:
-            db_order.ret_msg = result["retMsg"]
-        db.commit()
-        db.refresh(db_order)
-    except Exception as e:
-        # 查询失败，返回现有数据
-        pass
+    # 已支付充值中：查询第三方充值状态
+    if db_order.pay_status == "paid" and db_order.order_status == "processing":
+        try:
+            result = await call_query_api(
+                euser_id=FIXED_EUSER_ID,
+                euser_order_no=order_id,
+                timestamp=int(time.time() * 1000),
+            )
+            logger.info(f"第三方查询接口返回: {result}")
+            if "orderStatus" in result:
+                db_order.order_status = result["orderStatus"]
+            if "cardInfo" in result:
+                db_order.card_info = result["cardInfo"]
+            if "retCode" in result:
+                db_order.ret_code = result["retCode"]
+            if "retMsg" in result:
+                db_order.ret_msg = result["retMsg"]
+            db.commit()
+            db.refresh(db_order)
+        except Exception as e:
+            logger.warning(f"第三方查询接口调用失败: {str(e)}")
 
     return db_order
 
-
-@router.delete("/deleteOrder", summary="删除订单")
-async def delete_order(
-    order_id: str = Query(..., description="订单ID"),
-    db: Session = Depends(get_db),
-):
-    """
-    删除订单
-
-    - 验证订单存在
-    - 仅当order_status = fail时允许删除
-    """
-    # 验证订单存在
-    db_order = db.query(Order).filter(Order.order_id == order_id).first()
-    if not db_order:
-        raise HTTPException(status_code=404, detail="订单不存在")
-
-    # 仅当order_status = fail时允许删除
-    if db_order.order_status != "fail":
-        raise HTTPException(status_code=400, detail="只能删除失败的订单")
-
-    db.delete(db_order)
-    db.commit()
-
-    return {"message": "订单删除成功", "order_id": order_id}
 
 
 @router.post("/callback", summary="订单回调")
@@ -194,7 +307,7 @@ async def order_callback(
     db: Session = Depends(get_db),
 ):
     """
-    订单回调接口（第三方平台调用）
+    订单回调接口（第三方充值平台调用）
 
     - 验证签名
     - 查找订单
@@ -202,7 +315,7 @@ async def order_callback(
     """
     logger.info(f"收到订单回调请求: {callback.model_dump()}")
 
-    # 1. 验证签名（排除sign字段）
+    # 1. 验证签名
     params = callback.model_dump(exclude={"sign"})
     if not verify_sign(params, callback.sign, settings.apikey):
         logger.warning(f"签名验证失败, 订单号: {callback.euserOrderNo}")
@@ -216,9 +329,9 @@ async def order_callback(
         logger.warning(f"订单不存在: {callback.euserOrderNo}")
         raise HTTPException(status_code=404, detail="订单不存在")
 
-    # 3. 幂等性检查：只有processing状态才更新
-    if db_order.order_status != "processing":
-        logger.info(f"订单状态非processing，跳过更新: {callback.euserOrderNo}, 当前状态: {db_order.order_status}")
+    # 3. 幂等性检查：只有 paid 且 processing 状态才更新
+    if db_order.pay_status != "paid" or db_order.order_status != "processing":
+        logger.info(f"订单状态不满足更新条件，跳过: {callback.euserOrderNo}, pay_status={db_order.pay_status}, order_status={db_order.order_status}")
         return "success"
 
     # 4. 更新订单信息
@@ -234,5 +347,41 @@ async def order_callback(
 
     logger.info(f"订单回调处理成功, 订单号: {callback.euserOrderNo}, 状态: {callback.orderStatus}")
 
-    # 返回第三方期望的格式
+    return "success"
+
+
+@router.post("/callback/alipay", summary="支付宝支付回调")
+async def alipay_callback(
+    order_id: str = Query(..., description="订单ID"),
+    trade_status: str = Query(..., description="交易状态"),
+    trade_no: str = Query(None, description="支付宝交易号"),
+    db: Session = Depends(get_db),
+):
+    """
+    支付宝支付回调
+
+    - 验证订单存在且 pay_status=pending
+    - 更新支付状态
+    - 触发第三方充值
+    """
+    db_order = db.query(Order).filter(Order.order_id == order_id).first()
+    if not db_order:
+        raise HTTPException(status_code=404, detail="订单不存在")
+
+    if db_order.pay_status != "pending":
+        return "success"
+
+    if trade_status == "TRADE_SUCCESS":
+        if trade_no:
+            db_order.alipay_trade_no = trade_no
+        db_order.pay_status = "paid"
+        db_order.order_status = "processing"
+        db.commit()
+        db.refresh(db_order)
+
+        # 触发第三方充值
+        product = db.query(Product).filter(Product.id == db_order.product_id).first()
+        if product:
+            await trigger_charge(db, db_order, product)
+
     return "success"

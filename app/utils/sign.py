@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 from typing import Dict, Any
 
 
@@ -19,11 +20,14 @@ def generate_sign(params: Dict[str, Any], apikey: str) -> str:
     Returns:
         MD5签名（小写）
     """
+    # 过滤掉值为 None 的参数，不参与签名计算
+    filtered_params = {k: v for k, v in params.items() if v is not None}
+
     # 按参数名字母顺序排序
-    sorted_keys = sorted(params.keys())
+    sorted_keys = sorted(filtered_params.keys())
 
     # 拼接参数值
-    values_str = "".join(str(params[key]) for key in sorted_keys)
+    values_str = "".join(str(filtered_params[key]) for key in sorted_keys)
 
     # 结尾加apikey
     sign_str = values_str + apikey
@@ -47,4 +51,4 @@ def verify_sign(params: Dict[str, Any], sign: str, apikey: str) -> bool:
         签名是否有效
     """
     expected_sign = generate_sign(params, apikey)
-    return expected_sign == sign
+    return hmac.compare_digest(expected_sign, sign)

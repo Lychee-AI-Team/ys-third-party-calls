@@ -405,30 +405,81 @@ async def alipay_callback(
     db: Session = Depends(get_db),
 ):
     """
-    支付宝支付回调
+    支付宝支付回调（增强安全性）
 
-    - 验证订单存在且 pay_status=pending
-    - 更新支付状态
-    - 触发第三方充值
+    安全机制：
+    - 收到回调后主动调用支付宝查询接口验证交易真实性
+    - 校验实际支付金额与订单金额匹配
+    - 行级锁防止并发重复充值
     """
-    db_order = db.query(Order).filter(Order.order_id == order_id).first()
-    if not db_order:
-        raise HTTPException(status_code=404, detail="订单不存在")
+    logger.info(f"[alipay_callback] 收到回调: order_id={order_id}, trade_status={trade_status}, trade_no={trade_no}")
 
-    if db_order.pay_status != "pending":
+    # 1. 行级锁查询订单
+    db_order = db.query(Order).filter(Order.order_id == order_id).with_for_update().first()
+    if not db_order:
+        logger.warning(f"[alipay_callback] 订单不存在: order_id={order_id}")
         return "success"
 
-    if trade_status == "TRADE_SUCCESS":
-        if trade_no:
-            db_order.alipay_trade_no = trade_no
-        db_order.pay_status = "paid"
-        db_order.order_status = "processing"
-        db.commit()
-        db.refresh(db_order)
+    # 幂等：已处理过的订单直接返回
+    if db_order.pay_status != "pending":
+        logger.info(f"[alipay_callback] 订单已处理: order_id={order_id}, pay_status={db_order.pay_status}")
+        return "success"
 
-        # 触发第三方充值
-        product = db.query(Product).filter(Product.id == db_order.product_id).first()
-        if product:
-            await trigger_charge(db, db_order, product)
+    # 2. 非 TRADE_SUCCESS 直接忽略
+    if trade_status != "TRADE_SUCCESS":
+        logger.info(f"[alipay_callback] 非成功状态，忽略: order_id={order_id}, trade_status={trade_status}")
+        return "success"
+
+    # 3. 主动调用支付宝查询接口验证交易真实性
+    try:
+        query_result = await call_alipay_tool("query-alipay-payment", {"outTradeNo": order_id})
+        raw_text = query_result.get("raw_text", "")
+        logger.info(f"[alipay_callback] 支付宝查询结果: order_id={order_id}, raw_text={raw_text}")
+
+        # 验证交易确实成功
+        if "TRADE_SUCCESS" not in raw_text and "支付成功" not in raw_text:
+            logger.warning(f"[alipay_callback] 支付宝查询未确认支付成功: order_id={order_id}")
+            return "success"
+
+        # 验证金额匹配
+        amount_match = re.search(r'交易金额[：:]\s*(\d+\.?\d*)', raw_text)
+        if amount_match:
+            actual_amount = float(amount_match.group(1))
+            expected_amount = float(db_order.total_amount)
+            if abs(actual_amount - expected_amount) > 0.01:
+                logger.error(f"[alipay_callback] 金额不匹配: order_id={order_id}, expected={expected_amount}, actual={actual_amount}")
+                return "success"
+
+        # 提取并记录支付宝交易号
+        alipay_info = extract_alipay_info(query_result)
+        if alipay_info.get("trade_no"):
+            db_order.alipay_trade_no = alipay_info["trade_no"]
+        elif trade_no:
+            db_order.alipay_trade_no = trade_no
+        db_order.alipay_info = json.dumps(query_result, ensure_ascii=False)
+
+    except Exception as e:
+        logger.error(f"[alipay_callback] 支付宝查询失败: order_id={order_id}, error={str(e)}")
+        # 查询失败不更新状态，等待下次回调或手动查询
+        return "success"
+
+    # 4. 二次状态检查（防止查询期间状态被其他请求修改）
+    db.refresh(db_order)
+    if db_order.pay_status != "pending":
+        logger.info(f"[alipay_callback] 订单状态已变更，跳过: order_id={order_id}, pay_status={db_order.pay_status}")
+        return "success"
+
+    # 5. 更新状态并触发充值
+    db_order.pay_status = "paid"
+    db_order.order_status = "processing"
+    db.commit()
+    db.refresh(db_order)
+
+    logger.info(f"[alipay_callback] 支付成功，触发充值: order_id={order_id}")
+
+    # 触发第三方充值
+    product = db.query(Product).filter(Product.id == db_order.product_id).first()
+    if product:
+        await trigger_charge(db, db_order, product)
 
     return "success"

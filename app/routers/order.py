@@ -577,14 +577,6 @@ async def wechat_callback(request: Request, db: Session = Depends(get_db)):
 
     # 2. 验签+解密
     wechat_client = get_wechat_client()
-
-    # 首次回调时尝试获取平台证书
-    if not wechat_client._platform_certs:
-        try:
-            await wechat_client._fetch_platform_certificates()
-        except Exception as e:
-            logger.error(f"[wechat_callback] 获取平台证书失败: {e}")
-
     callback_data = wechat_client.verify_and_decrypt_callback(headers, body_str)
     if callback_data is None:
         logger.error("[wechat_callback] 验签或解密失败")

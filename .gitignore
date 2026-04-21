@@ -40,6 +40,11 @@ htmlcov/
 *.db
 *.sqlite3
 
+# 微信支付商户私钥（敏感文件）
+*.pem
+
 
 CODEBUDDY.md
 CLAUDE.md
+
+wechatpay_private_key.pem

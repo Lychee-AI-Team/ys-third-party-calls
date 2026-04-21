@@ -46,12 +46,11 @@ class OrderResponse(BaseModel):
     quantity: int
     total_amount: Optional[Decimal] = None
     pay_status: str = "pending"
+    pay_channel: Optional[str] = None
     alipay_trade_no: Optional[str] = None
     alipay_info: Optional[str] = None
-    refund_amount: Optional[Decimal] = None
-    refund_trade_no: Optional[str] = None
-    out_request_no: Optional[str] = None
-    refund_info: Optional[str] = None
+    wechat_transaction_id: Optional[str] = None
+    wechat_info: Optional[str] = None
     account_no: str
     request_timestamp: int
     platform_order_no: Optional[str] = None

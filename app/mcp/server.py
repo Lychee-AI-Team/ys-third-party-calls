@@ -1,19 +1,37 @@
-"""FastMCP Server 定义"""
+"""FastMCP Server 定义
+
+双实例架构：
+- public：对外 MCP，只注册只读工具（查询商品、查询订单）
+- internal：内部 MCP，注册全部工具（含商品CRUD、订单创建）
+"""
 from fastmcp import FastMCP
 from app.config import settings
 
-# 创建 FastMCP 实例
-mcp = FastMCP(
-    name="ys-third-party-calls",
+# ==================== 对外 MCP 实例（只读）====================
+
+public_mcp = FastMCP(
+    name="ys-third-party-calls-public",
     version=settings.app_version,
 )
 
-# 导入并注册 Tools
-from app.mcp.tools import register_tools
-register_tools(mcp)
+from app.mcp.tools import register_public_tools
+register_public_tools(public_mcp)
 
 
-# 获取 HTTP 应用并添加路径规范化中间件
+# ==================== 内部 MCP 实例（完整CRUD）====================
+
+internal_mcp = FastMCP(
+    name="ys-third-party-calls-internal",
+    version=settings.app_version,
+)
+
+from app.mcp.tools import register_internal_tools
+register_public_tools(internal_mcp)
+register_internal_tools(internal_mcp)
+
+
+# ==================== 通用中间件 ====================
+
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
@@ -22,16 +40,21 @@ class PathNormalizeMiddleware(BaseHTTPMiddleware):
     """路径规范化中间件，处理双斜杠问题"""
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
-        # 规范化路径：移除开头的双斜杠
         if path.startswith("//"):
             request.scope["path"] = path[1:]
             request.scope["raw_path"] = request.scope["raw_path"][1:]
         return await call_next(request)
 
 
-# 创建带中间件的 HTTP 应用
-def get_mcp_app():
-    """获取带路径规范化的 MCP HTTP 应用"""
-    app = mcp.http_app()
+def get_public_mcp_app():
+    """获取对外 MCP HTTP 应用（只读工具）"""
+    app = public_mcp.http_app()
+    app.add_middleware(PathNormalizeMiddleware)
+    return app
+
+
+def get_internal_mcp_app():
+    """获取内部 MCP HTTP 应用（全部工具）"""
+    app = internal_mcp.http_app()
     app.add_middleware(PathNormalizeMiddleware)
     return app

@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     wechat_serial_no: str = ""                        # 商户证书序列号
     wechat_api_v3_key: str = ""                       # API v3 密钥（回调解密用）
     wechat_notify_url: str = ""                       # 支付结果通知地址
+    wechat_public_key: str = ""                       # 微信支付公钥文件路径（回调验签用）
 
     # MySQL数据库配置（预留，暂不实际连接）
     mysql_host: str = "localhost"

@@ -9,6 +9,7 @@ COPY app/ ./app/
 COPY run_mcp.py .
 COPY run_mcp_internal.py .
 COPY wechatpay_private_key.pem ./wechatpay_private_key.pem
+COPY wechatpay_public_key.pem ./wechatpay_public_key.pem
 
 EXPOSE 8000
 

@@ -2,6 +2,7 @@
 import base64
 import json
 import logging
+import os
 import time
 import uuid
 from cryptography.hazmat.primitives import hashes, serialization
@@ -15,6 +16,15 @@ logger = logging.getLogger(__name__)
 WECHAT_PAY_BASE_URL = "https://api.mch.weixin.qq.com"
 
 
+def _resolve_path(file_path: str) -> str:
+    """将相对路径解析为基于项目根目录的绝对路径"""
+    if not file_path:
+        return ""
+    if not os.path.isabs(file_path):
+        return os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), file_path)
+    return file_path
+
+
 class WeChatPayClient:
     """微信支付 v3 API 客户端"""
 
@@ -26,10 +36,7 @@ class WeChatPayClient:
         self.notify_url = settings.wechat_notify_url
 
         # 从文件读取商户私钥
-        import os
-        key_path = settings.wechat_private_key
-        if not os.path.isabs(key_path):
-            key_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), key_path)
+        key_path = _resolve_path(settings.wechat_private_key)
         with open(key_path, "r") as f:
             private_key_pem = f.read()
         self._private_key = serialization.load_pem_private_key(
@@ -37,7 +44,17 @@ class WeChatPayClient:
             password=None,
         )
 
-        # 平台证书缓存 {serial_no: certificate_pem}
+        # 微信支付公钥（回调验签用）
+        self._public_key = None
+        if settings.wechat_public_key:
+            pub_key_path = _resolve_path(settings.wechat_public_key)
+            with open(pub_key_path, "r") as f:
+                public_key_pem = f.read()
+            self._public_key = serialization.load_pem_public_key(
+                public_key_pem.encode("utf-8"),
+            )
+
+        # 平台证书缓存 {serial_no: certificate_pem}（兼容旧版平台证书模式）
         self._platform_certs: dict = {}
 
     def _sign(self, method: str, url: str, body: str = "") -> str:
@@ -212,18 +229,33 @@ class WeChatPayClient:
 
         # 验签消息
         sign_message = f"{timestamp}\n{nonce}\n{body}\n"
+        signature_bytes = base64.b64decode(signature)
 
-        # 获取平台证书
-        cert_pem = self._platform_certs.get(serial_no)
-        if not cert_pem:
-            logger.warning(f"[WeChatPay] 未缓存平台证书 serial_no={serial_no}，跳过验签（首次回调需先获取证书）")
+        # 优先使用微信支付公钥验签（serial_no 以 PUB_KEY_ID_ 开头）
+        if serial_no.startswith("PUB_KEY_ID_"):
+            if not self._public_key:
+                logger.error(f"[WeChatPay] 回调使用微信支付公钥验签，但未配置 WECHAT_PUBLIC_KEY")
+                return None
+            try:
+                self._public_key.verify(
+                    signature_bytes,
+                    sign_message.encode("utf-8"),
+                    padding.PKCS1v15(),
+                    hashes.SHA256(),
+                )
+            except Exception as e:
+                logger.error(f"[WeChatPay] 微信支付公钥验签失败: {e}")
+                return None
         else:
-            # 使用平台证书验签
+            # 兼容平台证书模式
+            cert_pem = self._platform_certs.get(serial_no)
+            if not cert_pem:
+                logger.error(f"[WeChatPay] 未缓存平台证书 serial_no={serial_no}，验签失败")
+                return None
             try:
                 from cryptography import x509
                 cert = x509.load_pem_x509_certificate(cert_pem.encode("utf-8"))
                 public_key = cert.public_key()
-                signature_bytes = base64.b64decode(signature)
                 public_key.verify(
                     signature_bytes,
                     sign_message.encode("utf-8"),
@@ -231,7 +263,7 @@ class WeChatPayClient:
                     hashes.SHA256(),
                 )
             except Exception as e:
-                logger.error(f"[WeChatPay] 回调验签失败: {e}")
+                logger.error(f"[WeChatPay] 平台证书验签失败: {e}")
                 return None
 
         # 解密回调数据

@@ -10,8 +10,9 @@ RUN pip install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua
 COPY app/ ./app/
 COPY sql/ ./sql/
 
-# 复制微信支付商户私钥（文件名由 WECHAT_PRIVATE_KEY 环境变量指定）
+# 复制微信支付密钥文件
 COPY wechatpay_private_key.pem ./wechatpay_private_key.pem
+COPY wechatpay_public_key.pem ./wechatpay_public_key.pem
 
 # 暴露端口
 EXPOSE 1000

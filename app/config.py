@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     mcp_host: str = "0.0.0.0"
     mcp_port: int = 8000
     mcp_internal_port: int = 8001
+    mcp_internal_allowed_ips: str = "127.0.0.1,::1"  # 内部MCP白名单IP，逗号分隔
     root_path: str = ""  # 反向代理路径前缀，如 /ys-third-party-calls
     base_url: str = "https://lychee.thinkarts.cn/ys-third-party-calls"  # 服务基础URL（用于生成支付代理链接等）
 

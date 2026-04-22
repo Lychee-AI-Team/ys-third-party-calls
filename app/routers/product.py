@@ -18,9 +18,12 @@ def create_product(product: ProductCreate, db: Session = Depends(get_db)):
 
     db_product = Product(
         name=product.name,
+        brand=product.brand,
         third_party_code=product.third_party_code,
-        description=product.description,
-        cost_price=product.cost_price,
+        face_value=product.face_value,
+        charge_type=product.charge_type,
+        category_name=product.category_name,
+        display_name=product.display_name,
         selling_price=product.selling_price,
     )
     db.add(db_product)
@@ -33,7 +36,7 @@ def create_product(product: ProductCreate, db: Session = Depends(get_db)):
 def list_products(
     page: int = Query(1, ge=1, description="页码"),
     page_size: int = Query(10, ge=1, le=100, description="每页数量"),
-    keyword: Optional[str] = Query(None, description="搜索关键词（商品名称/第三方产品编码）"),
+    keyword: Optional[str] = Query(None, description="搜索关键词（商品名称/品牌/分类/显示名称/第三方产品编码）"),
     is_published: Optional[bool] = Query(None, description="上架状态"),
     db: Session = Depends(get_db),
 ):
@@ -45,6 +48,9 @@ def list_products(
         query = query.filter(
             or_(
                 Product.name.contains(keyword),
+                Product.brand.contains(keyword),
+                Product.category_name.contains(keyword),
+                Product.display_name.contains(keyword),
                 Product.third_party_code.contains(keyword),
             )
         )

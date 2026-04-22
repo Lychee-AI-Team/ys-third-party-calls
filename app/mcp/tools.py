@@ -118,32 +118,30 @@ def register_public_tools(mcp: FastMCP):
         page: int = 1,
         page_size: int = 10,
         keyword: str = None,
-        is_published: bool = None
     ) -> dict:
-        """查询商品列表
+        """查询商品列表（仅上架商品）
 
         Args:
             page: 页码（默认1）
             page_size: 每页数量（默认10）
-            keyword: 搜索关键词（可选）
-            is_published: 上架状态筛选（可选）
+            keyword: 搜索关键词（商品名称/品牌/分类/显示名称/第三方产品编码，可选）
         """
-        logger.info(f"[product_list] 查询商品列表: page={page}, page_size={page_size}, keyword={keyword}, is_published={is_published}")
+        logger.info(f"[product_list] 查询商品列表: page={page}, page_size={page_size}, keyword={keyword}")
         db = SessionLocal()
         try:
-            query = db.query(Product)
+            query = db.query(Product).filter(Product.is_published == True)
 
             if keyword:
                 from sqlalchemy import or_
                 query = query.filter(
                     or_(
                         Product.name.contains(keyword),
+                        Product.brand.contains(keyword),
+                        Product.category_name.contains(keyword),
+                        Product.display_name.contains(keyword),
                         Product.third_party_code.contains(keyword),
                     )
                 )
-
-            if is_published is not None:
-                query = query.filter(Product.is_published == is_published)
 
             total = query.count()
             products = query.order_by(Product.id.desc()).offset((page - 1) * page_size).limit(page_size).all()
@@ -159,8 +157,12 @@ def register_public_tools(mcp: FastMCP):
                         {
                             "id": p.id,
                             "name": p.name,
+                            "brand": p.brand,
                             "third_party_code": p.third_party_code,
-                            "cost_price": float(p.cost_price),
+                            "face_value": float(p.face_value),
+                            "charge_type": p.charge_type,
+                            "category_name": p.category_name,
+                            "display_name": p.display_name,
                             "selling_price": float(p.selling_price),
                             "is_published": p.is_published,
                         }
@@ -181,9 +183,9 @@ def register_public_tools(mcp: FastMCP):
         logger.info(f"[product_get] 查询商品详情: product_id={product_id}")
         db = SessionLocal()
         try:
-            product = db.query(Product).filter(Product.id == product_id).first()
+            product = db.query(Product).filter(Product.id == product_id, Product.is_published == True).first()
             if not product:
-                logger.warning(f"[product_get] 商品不存在: product_id={product_id}")
+                logger.warning(f"[product_get] 商品不存在或未上架: product_id={product_id}")
                 return {"success": False, "error": "商品不存在"}
 
             return {
@@ -191,9 +193,12 @@ def register_public_tools(mcp: FastMCP):
                 "data": {
                     "id": product.id,
                     "name": product.name,
+                    "brand": product.brand,
                     "third_party_code": product.third_party_code,
-                    "description": product.description,
-                    "cost_price": float(product.cost_price),
+                    "face_value": float(product.face_value),
+                    "charge_type": product.charge_type,
+                    "category_name": product.category_name,
+                    "display_name": product.display_name,
                     "selling_price": float(product.selling_price),
                     "is_published": product.is_published,
                 }
@@ -478,20 +483,121 @@ def register_public_tools(mcp: FastMCP):
 # ==================== 内部工具（完整CRUD）====================
 
 def register_internal_tools(mcp: FastMCP):
-    """注册内部 MCP Tools（包含商品管理等写入操作）"""
+    """注册内部 MCP Tools（包含商品管理等写入操作，商品查询不受上架限制）"""
 
     @mcp.tool()
-    def product_add(name: str, third_party_code: str, cost_price: float, selling_price: float, description: str = None) -> dict:
+    def product_list(
+        page: int = 1,
+        page_size: int = 10,
+        keyword: str = None,
+        is_published: bool = None,
+    ) -> dict:
+        """查询商品列表（内部，可查看所有商品）
+
+        Args:
+            page: 页码（默认1）
+            page_size: 每页数量（默认10）
+            keyword: 搜索关键词（商品名称/品牌/分类/显示名称/第三方产品编码，可选）
+            is_published: 上架状态筛选（可选）
+        """
+        logger.info(f"[product_list/internal] 查询商品列表: page={page}, page_size={page_size}, keyword={keyword}, is_published={is_published}")
+        db = SessionLocal()
+        try:
+            query = db.query(Product)
+
+            if keyword:
+                from sqlalchemy import or_
+                query = query.filter(
+                    or_(
+                        Product.name.contains(keyword),
+                        Product.brand.contains(keyword),
+                        Product.category_name.contains(keyword),
+                        Product.display_name.contains(keyword),
+                        Product.third_party_code.contains(keyword),
+                    )
+                )
+
+            if is_published is not None:
+                query = query.filter(Product.is_published == is_published)
+
+            total = query.count()
+            products = query.order_by(Product.id.desc()).offset((page - 1) * page_size).limit(page_size).all()
+
+            logger.info(f"[product_list/internal] 查询完成: total={total}, 返回{len(products)}条")
+            return {
+                "success": True,
+                "data": {
+                    "total": total,
+                    "page": page,
+                    "page_size": page_size,
+                    "products": [
+                        {
+                            "id": p.id,
+                            "name": p.name,
+                            "brand": p.brand,
+                            "third_party_code": p.third_party_code,
+                            "face_value": float(p.face_value),
+                            "charge_type": p.charge_type,
+                            "category_name": p.category_name,
+                            "display_name": p.display_name,
+                            "selling_price": float(p.selling_price),
+                            "is_published": p.is_published,
+                        }
+                        for p in products
+                    ]
+                }
+            }
+        finally:
+            db.close()
+
+    @mcp.tool()
+    def product_get(product_id: int) -> dict:
+        """查询商品详情（内部，可查看未上架商品）
+
+        Args:
+            product_id: 商品ID
+        """
+        logger.info(f"[product_get/internal] 查询商品详情: product_id={product_id}")
+        db = SessionLocal()
+        try:
+            product = db.query(Product).filter(Product.id == product_id).first()
+            if not product:
+                logger.warning(f"[product_get/internal] 商品不存在: product_id={product_id}")
+                return {"success": False, "error": "商品不存在"}
+
+            return {
+                "success": True,
+                "data": {
+                    "id": product.id,
+                    "name": product.name,
+                    "brand": product.brand,
+                    "third_party_code": product.third_party_code,
+                    "face_value": float(product.face_value),
+                    "charge_type": product.charge_type,
+                    "category_name": product.category_name,
+                    "display_name": product.display_name,
+                    "selling_price": float(product.selling_price),
+                    "is_published": product.is_published,
+                }
+            }
+        finally:
+            db.close()
+
+    @mcp.tool()
+    def product_add(name: str, third_party_code: str, selling_price: float, face_value: float = 0, charge_type: int = 1, brand: str = None, category_name: str = None, display_name: str = None) -> dict:
         """新增商品
 
         Args:
             name: 商品名称
             third_party_code: 第三方产品编码
-            cost_price: 成本价
             selling_price: 售价
-            description: 商品描述（可选）
+            face_value: 面值（默认0）
+            charge_type: 充值类型：1直充 2卡密（默认1）
+            brand: 品牌（可选）
+            category_name: 分类名称（可选）
+            display_name: 显示名称（可选）
         """
-        logger.info(f"[product_add] 新增商品: name={name}, third_party_code={third_party_code}, cost_price={cost_price}, selling_price={selling_price}")
+        logger.info(f"[product_add] 新增商品: name={name}, third_party_code={third_party_code}, face_value={face_value}, selling_price={selling_price}")
         db = SessionLocal()
         try:
             if db.query(Product).filter(Product.third_party_code == third_party_code).first():
@@ -500,9 +606,12 @@ def register_internal_tools(mcp: FastMCP):
 
             product = Product(
                 name=name,
+                brand=brand,
                 third_party_code=third_party_code,
-                description=description,
-                cost_price=cost_price,
+                face_value=face_value,
+                charge_type=charge_type,
+                category_name=category_name,
+                display_name=display_name,
                 selling_price=selling_price,
             )
             db.add(product)
@@ -515,8 +624,12 @@ def register_internal_tools(mcp: FastMCP):
                 "data": {
                     "id": product.id,
                     "name": product.name,
+                    "brand": product.brand,
                     "third_party_code": product.third_party_code,
-                    "cost_price": float(product.cost_price),
+                    "face_value": float(product.face_value),
+                    "charge_type": product.charge_type,
+                    "category_name": product.category_name,
+                    "display_name": product.display_name,
                     "selling_price": float(product.selling_price),
                     "is_published": product.is_published,
                 }

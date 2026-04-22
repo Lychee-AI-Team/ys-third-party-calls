@@ -46,6 +46,20 @@ class PathNormalizeMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+class IPWhitelistMiddleware(BaseHTTPMiddleware):
+    """IP白名单中间件，限制内部MCP访问来源"""
+    async def dispatch(self, request: Request, call_next):
+        from starlette.responses import JSONResponse
+
+        client_ip = request.client.host if request.client else None
+        allowed_ips = [ip.strip() for ip in settings.mcp_internal_allowed_ips.split(",") if ip.strip()]
+
+        if client_ip not in allowed_ips:
+            return JSONResponse(status_code=403, content={"detail": "Access denied"})
+
+        return await call_next(request)
+
+
 def get_public_mcp_app():
     """获取对外 MCP HTTP 应用（只读工具）"""
     app = public_mcp.http_app()
@@ -54,7 +68,8 @@ def get_public_mcp_app():
 
 
 def get_internal_mcp_app():
-    """获取内部 MCP HTTP 应用（全部工具）"""
+    """获取内部 MCP HTTP 应用（全部工具，IP白名单保护）"""
     app = internal_mcp.http_app()
+    app.add_middleware(IPWhitelistMiddleware)
     app.add_middleware(PathNormalizeMiddleware)
     return app

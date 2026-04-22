@@ -7,18 +7,24 @@ from pydantic import BaseModel, Field
 class ProductCreate(BaseModel):
     """创建商品请求模型"""
     name: str = Field(..., max_length=100, description="商品名称")
+    brand: Optional[str] = Field(None, max_length=100, description="品牌")
     third_party_code: str = Field(..., max_length=100, description="第三方产品编码")
-    description: Optional[str] = Field(None, description="商品信息描述")
-    cost_price: Decimal = Field(..., ge=0, description="成本价")
+    face_value: Decimal = Field(0, ge=0, description="面值")
+    charge_type: int = Field(1, description="充值类型：1直充 2卡密")
+    category_name: Optional[str] = Field(None, max_length=100, description="分类名称")
+    display_name: Optional[str] = Field(None, max_length=200, description="显示名称")
     selling_price: Decimal = Field(..., ge=0, description="售价")
 
 
 class ProductUpdate(BaseModel):
     """更新商品请求模型"""
     name: Optional[str] = Field(None, max_length=100, description="商品名称")
+    brand: Optional[str] = Field(None, max_length=100, description="品牌")
     third_party_code: Optional[str] = Field(None, max_length=100, description="第三方产品编码")
-    description: Optional[str] = Field(None, description="商品信息描述")
-    cost_price: Optional[Decimal] = Field(None, ge=0, description="成本价")
+    face_value: Optional[Decimal] = Field(None, ge=0, description="面值")
+    charge_type: Optional[int] = Field(None, description="充值类型：1直充 2卡密")
+    category_name: Optional[str] = Field(None, max_length=100, description="分类名称")
+    display_name: Optional[str] = Field(None, max_length=200, description="显示名称")
     selling_price: Optional[Decimal] = Field(None, ge=0, description="售价")
 
 
@@ -26,9 +32,12 @@ class ProductResponse(BaseModel):
     """商品响应模型"""
     id: int
     name: str
+    brand: Optional[str] = None
     third_party_code: str
-    description: Optional[str] = None
-    cost_price: Decimal
+    face_value: Decimal
+    charge_type: int
+    category_name: Optional[str] = None
+    display_name: Optional[str] = None
     selling_price: Decimal
     is_published: bool
     created_at: datetime

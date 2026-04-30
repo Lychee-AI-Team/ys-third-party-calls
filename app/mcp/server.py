@@ -47,17 +47,34 @@ class PathNormalizeMiddleware(BaseHTTPMiddleware):
 
 
 class IPWhitelistMiddleware(BaseHTTPMiddleware):
-    """IP白名单中间件，限制内部MCP访问来源"""
+    """IP白名单中间件，限制内部MCP访问来源，支持 CIDR 子网匹配"""
     async def dispatch(self, request: Request, call_next):
+        import ipaddress
         from starlette.responses import JSONResponse
 
-        client_ip = request.client.host if request.client else None
-        allowed_ips = [ip.strip() for ip in settings.mcp_internal_allowed_ips.split(",") if ip.strip()]
-
-        if client_ip not in allowed_ips:
+        # 优先从代理头获取真实客户端 IP（Docker NAT / 反向代理场景）
+        client_ip = (
+            request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+            or request.headers.get("x-real-ip", "").strip()
+            or (request.client.host if request.client else None)
+        )
+        if not client_ip:
             return JSONResponse(status_code=403, content={"detail": "Access denied"})
 
-        return await call_next(request)
+        allowed_ips = [ip.strip() for ip in settings.mcp_internal_allowed_ips.split(",") if ip.strip()]
+
+        try:
+            client_addr = ipaddress.ip_address(client_ip)
+            for rule in allowed_ips:
+                if "/" in rule:
+                    if client_addr in ipaddress.ip_network(rule, strict=False):
+                        return await call_next(request)
+                elif client_ip == rule:
+                    return await call_next(request)
+        except ValueError:
+            pass
+
+        return JSONResponse(status_code=403, content={"detail": "Access denied"})
 
 
 def get_public_mcp_app():

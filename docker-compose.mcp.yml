@@ -9,3 +9,15 @@ services:
     env_file:
       - .env
     restart: unless-stopped
+
+  mcp-internal:
+    build:
+      context: .
+      dockerfile: Dockerfile.mcp
+    container_name: ys-mcp-internal
+    command: ["python", "run_mcp_internal.py"]
+    ports:
+      - "${MCP_INTERNAL_PORT:-8001}:${MCP_INTERNAL_PORT:-8001}"
+    env_file:
+      - .env
+    restart: unless-stopped

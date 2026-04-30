@@ -1,6 +1,10 @@
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from sqlalchemy import Column, DateTime, Integer, Numeric, String, Text, BigInteger, ForeignKey
 from app.database import Base
+
+# 统一使用北京时间（UTC+8）
+_BJ_TZ = timezone(timedelta(hours=8))
+bj_now = lambda: datetime.now(_BJ_TZ).replace(tzinfo=None)
 
 
 class Order(Base):
@@ -26,5 +30,5 @@ class Order(Base):
     ret_msg = Column(String(255), nullable=True, comment="接单结果描述")
     order_status = Column(String(20), default="pending", comment="订单状态")
     card_info = Column(Text, nullable=True, comment="卡密信息")
-    created_at = Column(DateTime, default=datetime.utcnow, comment="创建时间")
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, comment="更新时间")
+    created_at = Column(DateTime, default=bj_now, comment="创建时间")
+    updated_at = Column(DateTime, default=bj_now, onupdate=bj_now, comment="更新时间")

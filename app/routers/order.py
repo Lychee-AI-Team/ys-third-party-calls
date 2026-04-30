@@ -3,7 +3,7 @@ import re
 import time
 import uuid
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session
@@ -23,6 +23,11 @@ router = APIRouter(prefix="/orders", tags=["订单管理"])
 
 # 使用配置中的固定客户编码
 FIXED_EUSER_ID = settings.fixed_euser_id
+
+# 北京时间（UTC+8）
+_BJ_TZ = timezone(timedelta(hours=8))
+def _bj_now():
+    return datetime.now(_BJ_TZ).replace(tzinfo=None)
 
 
 def generate_order_id() -> str:
@@ -164,7 +169,7 @@ async def create_order(order: OrderCreate, db: Session = Depends(get_db)):
                 Order.pay_status == "pending",
             ).first()
             if existing:
-                if existing.created_at and existing.created_at < datetime.utcnow() - timedelta(minutes=10):
+                if existing.created_at and existing.created_at < _bj_now() - timedelta(minutes=10):
                     logger.info(f"pending订单已超时，删除旧订单: order_id={existing.order_id}")
                     db.delete(existing)
                     db.flush()
@@ -370,7 +375,7 @@ async def pay_order(order_id: str, db: Session = Depends(get_db)):
     if not db_order or db_order.pay_status != "pending":
         return HTMLResponse(content=_closed_order_html("订单已关闭", "该订单已过期或已处理，请重新下单"))
 
-    if db_order.created_at and db_order.created_at < datetime.utcnow() - timedelta(minutes=10):
+    if db_order.created_at and db_order.created_at < _bj_now() - timedelta(minutes=10):
         return HTMLResponse(content=_closed_order_html("订单已关闭", "该订单已超时，请重新下单"))
 
     # pay_channel 已确定为微信，不允许用支付宝
@@ -658,7 +663,7 @@ async def wxpay_qrcode(order_id: str, db: Session = Depends(get_db)):
     if not db_order or db_order.pay_status != "pending":
         return HTMLResponse(content=_closed_order_html("订单已关闭", "该订单已过期或已处理，请重新下单"))
 
-    if db_order.created_at and db_order.created_at < datetime.utcnow() - timedelta(minutes=10):
+    if db_order.created_at and db_order.created_at < _bj_now() - timedelta(minutes=10):
         return HTMLResponse(content=_closed_order_html("订单已关闭", "该订单已超时，请重新下单"))
 
     # pay_channel 已确定为支付宝，不允许用微信

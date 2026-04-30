@@ -7,7 +7,7 @@ import json
 import logging
 import time
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from fastmcp import FastMCP
 from app.database import SessionLocal
 from app.models.product import Product
@@ -18,6 +18,11 @@ from app.mcp.wechat.client import get_wechat_client
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+# 北京时间（UTC+8）
+_BJ_TZ = timezone(timedelta(hours=8))
+def _bj_now():
+    return datetime.now(_BJ_TZ).replace(tzinfo=None)
 
 
 # ==================== 辅助函数 ====================
@@ -406,7 +411,7 @@ def register_public_tools(mcp: FastMCP):
                     Order.pay_status == "pending",
                 ).first()
                 if existing:
-                    if existing.created_at and existing.created_at < datetime.utcnow() - timedelta(minutes=10):
+                    if existing.created_at and existing.created_at < _bj_now() - timedelta(minutes=10):
                         logger.info(f"[order_create] pending订单已超时，删除旧订单: order_id={existing.order_id}, created_at={existing.created_at}")
                         db.delete(existing)
                         db.flush()
